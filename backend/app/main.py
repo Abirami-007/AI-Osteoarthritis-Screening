@@ -20,7 +20,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFi
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from .database import get_db, hash_password, init_db, verify_password
+from .database import get_db, get_engine, hash_password, init_db, verify_password
 from .feature_extraction import (
     EXPECTED_SENSOR_COLUMNS,
     run_full_pipeline,
@@ -132,6 +132,7 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "health": "GET /health",
+            "db_status": "GET /db-status",
             "model_info": "GET /model-info",
             "predict": "POST /predict",
             "auth_register": "POST /auth/register",
@@ -150,6 +151,50 @@ async def health_check():
         service="KneeCare AI API",
         model_loaded=model_service.is_loaded(),
     )
+
+
+@app.get("/db-status")
+async def db_status():
+    """
+    Check production database connection and verify existence of required tables.
+    Returns database connection status and boolean flags for each table.
+    Never exposes DATABASE_URL, passwords, or credentials.
+    """
+    engine = get_engine()
+    if engine is None:
+        return {
+            "database_connected": False,
+            "tables": {
+                "users": False,
+                "patients": False,
+                "screenings": False,
+            },
+        }
+
+    try:
+        from sqlalchemy import inspect
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            table_names = inspector.get_table_names()
+            existing_tables = set(table_names)
+            return {
+                "database_connected": True,
+                "tables": {
+                    "users": "users" in existing_tables,
+                    "patients": "patients" in existing_tables,
+                    "screenings": "screenings" in existing_tables,
+                },
+            }
+    except Exception as e:
+        logger.error("Database status check failed: %s", e)
+        return {
+            "database_connected": False,
+            "tables": {
+                "users": False,
+                "patients": False,
+                "screenings": False,
+            },
+        }
 
 
 @app.get("/model-info", response_model=ModelInfoResponse)

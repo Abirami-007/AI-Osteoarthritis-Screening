@@ -358,3 +358,60 @@ def test_unconfigured_db_returns_503(monkeypatch):
         assert resp.status_code == 503
         assert "not configured" in resp.json()["detail"].lower()
 
+
+# ─────────────────────────────────────────────
+# 6. GET /db-status Endpoint Tests
+# ─────────────────────────────────────────────
+
+def test_db_status_connected_with_tables(monkeypatch, client):
+    """Verify /db-status accurately inspects live connection and reports table flags."""
+    monkeypatch.setattr("backend.app.main.get_engine", lambda: test_engine)
+
+    resp = client.get("/db-status")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["database_connected"] is True
+    assert "tables" in data
+    assert data["tables"]["users"] is True
+    assert data["tables"]["patients"] is True
+    assert data["tables"]["screenings"] is True
+
+    # Security check: no credentials or connection string exposed
+    resp_text = resp.text.lower()
+    for sensitive in ["password", "postgres://", "postgresql://", "secret", "user="]:
+        assert sensitive not in resp_text
+
+
+def test_db_status_unconfigured(monkeypatch, client):
+    """Verify /db-status returns database_connected: false when no engine is configured."""
+    monkeypatch.setattr("backend.app.main.get_engine", lambda: None)
+
+    resp = client.get("/db-status")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["database_connected"] is False
+    assert data["tables"]["users"] is False
+    assert data["tables"]["patients"] is False
+    assert data["tables"]["screenings"] is False
+
+
+def test_db_status_connection_error(monkeypatch, client):
+    """Verify /db-status safely handles connection failures without leaking errors or credentials."""
+    class FaultyEngine:
+        def connect(self):
+            raise ConnectionError("Database host unreachable")
+
+    monkeypatch.setattr("backend.app.main.get_engine", lambda: FaultyEngine())
+
+    resp = client.get("/db-status")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["database_connected"] is False
+    assert data["tables"]["users"] is False
+    assert data["tables"]["patients"] is False
+    assert data["tables"]["screenings"] is False
+
+
