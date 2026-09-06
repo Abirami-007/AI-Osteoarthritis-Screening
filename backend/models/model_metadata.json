@@ -1,0 +1,170 @@
+{
+  "model_version": "1.0",
+  "algorithm": "LogisticRegression",
+  "threshold": 0.5,
+  "feature_count": 26,
+  "feature_names": [
+    "Age",
+    "BMI",
+    "Sex",
+    "Speed",
+    "Stance",
+    "StanceDIfference",
+    "AnkleIC",
+    "AnklePlantarflexion1",
+    "AnkleDorsalflexion",
+    "AnklePlantarflexion2",
+    "KneeMinimum",
+    "KneeIC",
+    "KneeMaximum",
+    "KneeMinimumTO",
+    "HipMininimum",
+    "HipMaximumStance",
+    "DIFF AnkleIC",
+    "AnklePlantarflexion1Difference",
+    "AnkleDorsalflexionDifference",
+    "AnklePlantarflexion2Difference",
+    "KneeMinDifference",
+    "KneeICDifference",
+    "KneeMaximumDifference",
+    "KneeMinimumTODifference",
+    "HipMinimumDifference",
+    "HipMaximumStanceDifference"
+  ],
+  "classes": [
+    "Healthy",
+    "Knee Osteoarthritis"
+  ],
+  "cohort": {
+    "dataset": "GaitClass.xlsx",
+    "total_samples": 126,
+    "train_samples": 100,
+    "test_samples": 26,
+    "train_counts": {
+      "Healthy": 76,
+      "KOA": 24,
+      "Total": 100
+    },
+    "test_counts": {
+      "Healthy": 20,
+      "KOA": 6,
+      "Total": 26
+    },
+    "random_seed": 42
+  },
+  "comparison_results": {
+    "LogisticRegression": {
+      "cv_5fold_f1_mean": 0.5445,
+      "cv_5fold_f1_std": 0.2091,
+      "cv_5fold_acc_mean": 0.73,
+      "cv_5fold_auc_mean": 0.7883,
+      "test_accuracy": 0.8462,
+      "test_precision": 0.6,
+      "test_recall": 1.0,
+      "test_f1": 0.75,
+      "test_roc_auc": 0.9333,
+      "confusion_matrix": [
+        [
+          16,
+          4
+        ],
+        [
+          0,
+          6
+        ]
+      ],
+      "tn": 16,
+      "fp": 4,
+      "fn": 0,
+      "tp": 6
+    },
+    "RandomForest": {
+      "cv_5fold_f1_mean": 0.64,
+      "cv_5fold_f1_std": 0.2083,
+      "cv_5fold_acc_mean": 0.84,
+      "cv_5fold_auc_mean": 0.8235,
+      "test_accuracy": 0.8462,
+      "test_precision": 0.6667,
+      "test_recall": 0.6667,
+      "test_f1": 0.6667,
+      "test_roc_auc": 0.85,
+      "confusion_matrix": [
+        [
+          18,
+          2
+        ],
+        [
+          2,
+          4
+        ]
+      ],
+      "tn": 18,
+      "fp": 2,
+      "fn": 2,
+      "tp": 4
+    },
+    "SVC": {
+      "cv_5fold_f1_mean": 0.5411,
+      "cv_5fold_f1_std": 0.1984,
+      "cv_5fold_acc_mean": 0.79,
+      "cv_5fold_auc_mean": 0.742,
+      "test_accuracy": 0.8846,
+      "test_precision": 0.8,
+      "test_recall": 0.6667,
+      "test_f1": 0.7273,
+      "test_roc_auc": 0.8917,
+      "confusion_matrix": [
+        [
+          19,
+          1
+        ],
+        [
+          2,
+          4
+        ]
+      ],
+      "tn": 19,
+      "fp": 1,
+      "fn": 2,
+      "tp": 4
+    }
+  },
+  "selected_metrics": {
+    "cv_5fold_f1_mean": 0.5445,
+    "cv_5fold_f1_std": 0.2091,
+    "cv_5fold_acc_mean": 0.73,
+    "cv_5fold_auc_mean": 0.7883,
+    "test_accuracy": 0.8462,
+    "test_precision": 0.6,
+    "test_recall": 1.0,
+    "test_f1": 0.75,
+    "test_roc_auc": 0.9333,
+    "confusion_matrix": [
+      [
+        16,
+        4
+      ],
+      [
+        0,
+        6
+      ]
+    ],
+    "tn": 16,
+    "fp": 4,
+    "fn": 0,
+    "tp": 6
+  },
+  "top_feature_coefficients": {
+    "KneeMaximum": -1.8046,
+    "AnkleDorsalflexion": 1.1409,
+    "KneeICDifference": -1.07,
+    "AnklePlantarflexion2": 1.0234,
+    "KneeIC": -0.9961,
+    "KneeMinDifference": -0.5206,
+    "AnkleDorsalflexionDifference": 0.5099,
+    "AnklePlantarflexion1": -0.4055,
+    "AnklePlantarflexion1Difference": 0.3968,
+    "Sex": 0.3826
+  },
+  "disclaimer": "Preliminary risk screening model only. Not a medical diagnostic tool. Evaluation metrics are based on a small cohort (N=126 total, N=26 test with 6 KOA cases) and have high uncertainty."
+}
