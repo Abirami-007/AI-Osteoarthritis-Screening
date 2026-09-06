@@ -95,6 +95,8 @@ class ModelService:
 
     def is_loaded(self) -> bool:
         """Check if a model is currently loaded and ready for prediction."""
+        if not self._loaded and self.model_path.exists():
+            self.load()
         return self._loaded and self.model is not None
 
     def predict(self, features_df: pd.DataFrame) -> dict:

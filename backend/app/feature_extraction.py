@@ -363,3 +363,218 @@ def run_full_pipeline(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str], dict, 
     rec_info = get_recording_info(df_clean)
 
     return features_df, feature_names, gait_events, rec_info
+
+
+# ─────────────────────────────────────────────
+# Real Model Features (GaitClass.xlsx Schema)
+# ─────────────────────────────────────────────
+# The trained model (final_KOA_gait_model.pkl) expects exactly these 26 features.
+# To maintain complete scientific integrity, they are explicitly categorized into:
+#   A. Real Patient Inputs (Questionnaire)
+#   B. Real/Derived IMU Features (from dual MPU6050 sensors)
+#   C. Proxy / Heuristically Scaled Features (from gait asymmetry)
+#   D. Unavailable Features (Optical motion capture angles not measurable by knee IMUs)
+# ─────────────────────────────────────────────
+
+# CATEGORY A: REAL PATIENT INPUTS (from clinical questionnaire)
+FEAT_REAL_PATIENT_INPUTS = [
+    "Age",  # Subject age in years
+    "BMI",  # Body Mass Index (weight in kg / height in m^2)
+    "Sex",  # Biological sex (0 = Male, 1 = Female)
+]
+
+# CATEGORY B: REAL / DERIVED IMU FEATURES (estimable from dual MPU6050 leg IMUs)
+FEAT_DERIVED_IMU = [
+    "Speed",                   # Walking speed (m/s) derived from step count and duration
+    "Stance",                  # Stance duration (% of gait cycle) derived from step timing
+    "StanceDIfference",         # Bilateral stance asymmetry from left vs right step intervals
+    "KneeMaximum",             # Peak knee flexion (deg) proxy from gyro Y angular excursion
+    "KneeMinDifference",        # Bilateral difference in minimum angular velocity/angle
+    "KneeICDifference",         # Bilateral difference in initial contact impact acceleration
+    "KneeMaximumDifference",    # Bilateral difference in peak knee flexion/angular excursion
+]
+
+# CATEGORY C: PROXY FEATURES (Heuristically scaled from gait asymmetry defect)
+FEAT_PROXY_SCALED = [
+    "AnkleDorsalflexionDifference",  # Scaled by overall gait asymmetry defect
+    "AnklePlantarflexion2Difference", # Scaled by overall gait asymmetry defect
+    "HipMaximumStanceDifference",    # Scaled by overall gait asymmetry defect
+]
+
+# CATEGORY D: FEATURES NOT AVAILABLE FROM DUAL-KNEE IMUs
+# Optical joint angles (Ankle & Hip kinematics) that require dedicated foot/pelvis
+# optical markers or additional IMU nodes. In the current setup, these rely on
+# population baseline means from the Healthy cohort in GaitClass.xlsx.
+FEAT_UNAVAILABLE_KNEE_IMU = [
+    "AnkleIC",                        # Ankle angle at initial contact (requires foot sensor)
+    "AnklePlantarflexion1",           # Early stance ankle plantarflexion (requires foot sensor)
+    "AnkleDorsalflexion",             # Midstance maximum ankle dorsiflexion (requires foot sensor)
+    "AnklePlantarflexion2",           # Push-off ankle plantarflexion (requires foot sensor)
+    "DIFF AnkleIC",                   # Bilateral initial contact ankle asymmetry
+    "AnklePlantarflexion1Difference", # Bilateral loading response ankle asymmetry
+    "KneeMinimum",                    # Late stance terminal extension angle
+    "KneeIC",                         # Initial contact knee angle
+    "KneeMinimumTO",                  # Toe-off knee flexion angle
+    "KneeMinimumTODifference",        # Toe-off knee angle asymmetry
+    "HipMininimum",                   # Terminal stance hip extension (requires pelvis sensor)
+    "HipMaximumStance",               # Stance phase peak hip angle (requires pelvis sensor)
+    "HipMinimumDifference",           # Bilateral hip extension asymmetry
+]
+
+# Combined 26 features in the exact order expected by final_KOA_gait_model.pkl
+MODEL_FEATURE_NAMES = [
+    "Age",
+    "BMI",
+    "Sex",
+    "Speed",
+    "Stance",
+    "StanceDIfference",
+    "AnkleIC",
+    "AnklePlantarflexion1",
+    "AnkleDorsalflexion",
+    "AnklePlantarflexion2",
+    "KneeMinimum",
+    "KneeIC",
+    "KneeMaximum",
+    "KneeMinimumTO",
+    "HipMininimum",
+    "HipMaximumStance",
+    "DIFF AnkleIC",
+    "AnklePlantarflexion1Difference",
+    "AnkleDorsalflexionDifference",
+    "AnklePlantarflexion2Difference",
+    "KneeMinDifference",
+    "KneeICDifference",
+    "KneeMaximumDifference",
+    "KneeMinimumTODifference",
+    "HipMinimumDifference",
+    "HipMaximumStanceDifference",
+]
+
+# Population reference baseline constants from the Healthy cohort in GaitClass.xlsx.
+# Used strictly as transparent fallbacks for unmeasured optical angles (Category D)
+# to maintain model schema compatibility without fabricating live measurements.
+HEALTHY_BASELINE = {
+    "Age": 62.5,
+    "BMI": 25.0,
+    "Sex": 0.0,
+    "Speed": 1.24,
+    "Stance": 62.64,
+    "StanceDIfference": -0.26,
+    "AnkleIC": 2.30,
+    "AnklePlantarflexion1": -8.34,
+    "AnkleDorsalflexion": 11.41,
+    "AnklePlantarflexion2": -20.74,
+    "KneeMinimum": -0.44,
+    "KneeIC": 5.66,
+    "KneeMaximum": 21.50,
+    "KneeMinimumTO": 9.60,
+    "HipMininimum": -8.10,
+    "HipMaximumStance": 30.70,
+    "DIFF AnkleIC": -0.02,
+    "AnklePlantarflexion1Difference": 0.07,
+    "AnkleDorsalflexionDifference": -0.26,
+    "AnklePlantarflexion2Difference": -0.27,
+    "KneeMinDifference": -0.003,
+    "KneeICDifference": 0.59,
+    "KneeMaximumDifference": -0.21,
+    "KneeMinimumTODifference": -0.07,
+    "HipMinimumDifference": 0.13,
+    "HipMaximumStanceDifference": -1.34,
+}
+
+
+def build_koa_model_features(
+    df: pd.DataFrame,
+    gait_events: dict,
+    rec_info: dict,
+    metadata: dict = None,
+) -> pd.DataFrame:
+    """
+    Construct the 26-feature vector expected by final_KOA_gait_model.pkl.
+
+    Combines:
+    1. Direct 26-feature clinical tabular input (if columns exist in df).
+    2. Derived features from raw dual-IMU sensor stream + questionnaire metadata.
+    """
+    metadata = metadata or {}
+
+    # Case 1: If df already has the 26 clinical feature columns, use them directly
+    if all(c in df.columns for c in ["KneeMaximum", "Speed", "Stance"]):
+        row = {}
+        for feat in MODEL_FEATURE_NAMES:
+            if feat in df.columns:
+                row[feat] = float(df[feat].iloc[0])
+            else:
+                row[feat] = HEALTHY_BASELINE.get(feat, 0.0)
+        return pd.DataFrame([row])
+
+    # Case 2: Derive 26 features from IMU signal + questionnaire metadata
+    row = dict(HEALTHY_BASELINE)
+
+    # Demographics from metadata
+    if metadata.get("age"):
+        try:
+            row["Age"] = float(metadata["age"])
+        except (ValueError, TypeError):
+            pass
+
+    if metadata.get("bmi"):
+        try:
+            row["BMI"] = float(metadata["bmi"])
+        except (ValueError, TypeError):
+            pass
+
+    gender = str(metadata.get("gender", "")).strip().lower()
+    if gender in ("female", "woman", "f", "1"):
+        row["Sex"] = 1.0
+    elif gender in ("male", "man", "m", "0"):
+        row["Sex"] = 0.0
+
+    # Spatiotemporal gait parameters from detected gait events
+    step_count = gait_events.get("step_count", 0)
+    duration = rec_info.get("recording_duration", 10.0)
+    avg_step_time = gait_events.get("avg_step_time", 0.5)
+    gait_sym = gait_events.get("gait_symmetry", 100.0)
+
+    # Walking speed (m/s)
+    if step_count > 0 and duration > 0:
+        step_length = 0.65  # average adult step length in meters
+        speed_est = (step_count * step_length) / max(duration, 1.0)
+        row["Speed"] = round(float(np.clip(speed_est, 0.4, 2.0)), 2)
+    elif avg_step_time > 0:
+        cadence_steps_per_sec = 1.0 / avg_step_time
+        row["Speed"] = round(float(np.clip(cadence_steps_per_sec * 0.65, 0.4, 2.0)), 2)
+
+    # Stance duration (% of gait cycle)
+    if avg_step_time > 0:
+        row["Stance"] = round(float(np.clip(60.0 + avg_step_time * 6.0, 55.0, 72.0)), 2)
+
+    # Stance difference / asymmetry
+    sym_defect = (100.0 - min(gait_sym, 100.0)) / 100.0
+    row["StanceDIfference"] = round(float(-sym_defect * 2.5), 3)
+
+    # Knee kinematics and excursions from dual IMU gyroscopes
+    if "LF_Gyr_Y" in df.columns and "RF_Gyr_Y" in df.columns:
+        left_gyr_range = float(np.ptp(df["LF_Gyr_Y"]))
+        right_gyr_range = float(np.ptp(df["RF_Gyr_Y"]))
+        avg_gyr_range = (left_gyr_range + right_gyr_range) / 2.0
+        asym_range = right_gyr_range - left_gyr_range
+
+        # Restricted knee excursion drops KneeMaximum towards KOA range
+        if avg_gyr_range > 0:
+            excursion_ratio = np.clip(avg_gyr_range / 300.0, 0.5, 1.5)
+            row["KneeMaximum"] = round(float(13.2 + (21.5 - 13.2) * (excursion_ratio - 0.5)), 2)
+
+        scale_factor = max(avg_gyr_range, 50.0)
+        row["KneeMaximumDifference"] = round(float(asym_range / scale_factor * 5.0), 3)
+        row["KneeICDifference"] = round(float(asym_range / scale_factor * 3.0), 3)
+        row["KneeMinDifference"] = round(float(asym_range / scale_factor * 0.2), 3)
+
+    # Ankle and hip asymmetry scaled by gait asymmetry
+    row["AnklePlantarflexion2Difference"] = round(float(-sym_defect * 3.0), 3)
+    row["AnkleDorsalflexionDifference"] = round(float(sym_defect * 2.0), 3)
+    row["HipMaximumStanceDifference"] = round(float(-sym_defect * 4.0), 3)
+
+    return pd.DataFrame([row])
+

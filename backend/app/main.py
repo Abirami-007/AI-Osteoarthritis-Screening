@@ -11,27 +11,39 @@ Endpoints:
 import io
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import Optional
 
 import pandas as pd
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
 
+from .database import get_db, hash_password, init_db, verify_password
 from .feature_extraction import (
     EXPECTED_SENSOR_COLUMNS,
     run_full_pipeline,
     get_expected_feature_names,
+    build_koa_model_features,
 )
 from .model_service import model_service
+from .models import Patient, Screening, User
 from .schemas import (
     GaitAnalysisResult,
     HealthResponse,
+    LoginResponse,
     ModelInfoResponse,
+    PatientCreateRequest,
+    PatientResponse,
     PredictionDetail,
     PredictionResponse,
+    ScreeningCreateRequest,
+    ScreeningResponse,
+    UserLoginRequest,
+    UserRegisterRequest,
+    UserResponse,
 )
-
-from contextlib import asynccontextmanager
 
 # ─────────────────────────────────────────────
 # Logging
@@ -48,7 +60,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifecycle manager: load ML model on startup."""
+    """Lifecycle manager: load ML model and initialize database tables on startup."""
     loaded = model_service.load()
     if loaded:
         logger.info("ML model loaded successfully on startup.")
@@ -58,7 +70,12 @@ async def lifespan(app: FastAPI):
             "until a trained model is placed at: %s",
             model_service.model_path,
         )
+
+    # Initialize database tables automatically if DATABASE_URL is configured
+    init_db()
+
     yield
+
 
 
 # ─────────────────────────────────────────────
@@ -117,6 +134,10 @@ async def root():
             "health": "GET /health",
             "model_info": "GET /model-info",
             "predict": "POST /predict",
+            "auth_register": "POST /auth/register",
+            "auth_login": "POST /auth/login",
+            "patients": "GET, POST /patients",
+            "screenings": "POST /screenings, GET /screenings/{patient_id}",
         },
     }
 
@@ -238,9 +259,27 @@ async def predict(
             timestamp=timestamp,
         )
 
+    # ── Prepare 26 model features from gait kinematics + metadata ──
+    model_input_df = build_koa_model_features(
+        df=df,
+        gait_events=gait_events,
+        rec_info=rec_info,
+        metadata={
+            "age": age,
+            "gender": gender,
+            "bmi": bmi,
+            "pain_score": pain_score,
+            "stiffness": stiffness,
+            "previous_knee_injury": previous_knee_injury,
+            "physical_activity": physical_activity,
+            "difficulty_walking": difficulty_walking,
+            "difficulty_climbing_stairs": difficulty_climbing_stairs,
+        },
+    )
+
     # ── Run prediction ──
     try:
-        result = model_service.predict(features_df)
+        result = model_service.predict(model_input_df)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
@@ -404,3 +443,202 @@ def _compute_risk_assessment(
         recommendations.append("Apply ice/heat therapy for pain relief")
 
     return risk_level, score, risk_factors, recommendations
+
+
+# ─────────────────────────────────────────────
+# Authentication Endpoints
+# ─────────────────────────────────────────────
+
+@app.post("/auth/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register(
+    payload: UserRegisterRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Register a new user (healthcare worker / clinician).
+    Passwords are automatically hashed securely using bcrypt.
+    """
+    existing = db.query(User).filter(
+        (User.username == payload.username) | (User.email == payload.email)
+    ).first()
+    if existing:
+        if existing.username.lower() == payload.username.lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username is already registered.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is already registered.",
+        )
+
+    hashed_pw = hash_password(payload.password)
+    user = User(
+        username=payload.username,
+        email=payload.email,
+        password_hash=hashed_pw,
+    )
+    db.add(user)
+    try:
+        db.commit()
+        db.refresh(user)
+    except Exception as e:
+        db.rollback()
+        logger.error("Failed to register user: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to register user.",
+        )
+    return user
+
+
+@app.post("/auth/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
+async def login(
+    payload: UserLoginRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Authenticate a user using username (or email) and password.
+    Returns the authenticated user details upon success.
+    """
+    user = db.query(User).filter(
+        (User.username == payload.username) | (User.email == payload.username)
+    ).first()
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials. Please check your username/email and password.",
+        )
+
+    return LoginResponse(
+        message="Login successful",
+        user=UserResponse.model_validate(user),
+    )
+
+
+# ─────────────────────────────────────────────
+# Patient Endpoints
+# ─────────────────────────────────────────────
+
+@app.post("/patients", response_model=PatientResponse, status_code=status.HTTP_201_CREATED)
+async def create_patient(
+    payload: PatientCreateRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Register a new patient record.
+    Optionally links to a registered user_id.
+    Automatically computes BMI from height and weight if not provided.
+    """
+    if payload.user_id is not None:
+        user = db.query(User).filter(User.id == payload.user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with id {payload.user_id} not found.",
+            )
+
+    bmi_val = payload.bmi
+    if bmi_val is None and payload.height and payload.weight:
+        height_m = payload.height / 100.0
+        if height_m > 0:
+            bmi_val = round(payload.weight / (height_m ** 2), 2)
+
+    patient = Patient(
+        name=payload.name,
+        age=payload.age,
+        sex=payload.sex,
+        height=payload.height,
+        weight=payload.weight,
+        bmi=bmi_val,
+        user_id=payload.user_id,
+    )
+    db.add(patient)
+    try:
+        db.commit()
+        db.refresh(patient)
+    except Exception as e:
+        db.rollback()
+        logger.error("Failed to create patient: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create patient.",
+        )
+    return patient
+
+
+@app.get("/patients", response_model=list[PatientResponse])
+async def list_patients(
+    user_id: Optional[int] = Query(None, description="Filter patients by associated user ID"),
+    db: Session = Depends(get_db),
+):
+    """
+    Retrieve all registered patients.
+    Supports optional filtering by user_id.
+    """
+    query = db.query(Patient)
+    if user_id is not None:
+        query = query.filter(Patient.user_id == user_id)
+    return query.order_by(Patient.created_at.desc()).all()
+
+
+# ─────────────────────────────────────────────
+# Screening Endpoints
+# ─────────────────────────────────────────────
+
+@app.post("/screenings", response_model=ScreeningResponse, status_code=status.HTTP_201_CREATED)
+async def create_screening(
+    payload: ScreeningCreateRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Record a new knee osteoarthritis risk screening result for a patient.
+    """
+    patient = db.query(Patient).filter(Patient.id == payload.patient_id).first()
+    if not patient:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Patient with id {payload.patient_id} not found.",
+        )
+
+    screening = Screening(
+        patient_id=payload.patient_id,
+        risk_result=payload.risk_result,
+        risk_probability=payload.risk_probability,
+    )
+    db.add(screening)
+    try:
+        db.commit()
+        db.refresh(screening)
+    except Exception as e:
+        db.rollback()
+        logger.error("Failed to save screening: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save screening record.",
+        )
+    return screening
+
+
+@app.get("/screenings/{patient_id}", response_model=list[ScreeningResponse])
+async def get_patient_screenings(
+    patient_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Retrieve all historical screening records for a specific patient.
+    """
+    patient = db.query(Patient).filter(Patient.id == patient_id).first()
+    if not patient:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Patient with id {patient_id} not found.",
+        )
+
+    return (
+        db.query(Screening)
+        .filter(Screening.patient_id == patient_id)
+        .order_by(Screening.created_at.desc())
+        .all()
+    )
+
