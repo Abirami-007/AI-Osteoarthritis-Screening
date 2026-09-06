@@ -194,6 +194,55 @@ def test_auth_login_with_username_and_email(client):
     assert not_found_login.status_code == 401
 
 
+def test_list_users_endpoint(client):
+    """Test GET /users returns registered users with public fields and never exposes passwords."""
+    # Register 2 users
+    client.post(
+        "/auth/register",
+        json={
+            "username": "alice_doc",
+            "email": "alice@hospital.org",
+            "password": "PasswordAlice123!",
+        },
+    )
+    client.post(
+        "/auth/register",
+        json={
+            "username": "bob_doc",
+            "email": "bob@hospital.org",
+            "password": "PasswordBob456!",
+        },
+    )
+
+    resp = client.get("/users")
+    assert resp.status_code == 200
+    users = resp.json()
+    assert len(users) == 2
+
+    # Verify fields returned
+    for u in users:
+        assert "id" in u
+        assert "username" in u
+        assert "email" in u
+        assert "created_at" in u
+        # Verify strictly NO password or password_hash fields
+        assert "password" not in u
+        assert "password_hash" not in u
+
+    # Check usernames match
+    usernames = [u["username"] for u in users]
+    assert "alice_doc" in usernames
+    assert "bob_doc" in usernames
+
+    # Stringent security check: raw response text must never contain password hash or sensitive words
+    resp_text = resp.text.lower()
+    assert "password" not in resp_text
+    assert "hash" not in resp_text
+    assert "$2b$" not in resp_text
+    assert "$2a$" not in resp_text
+
+
+
 # ─────────────────────────────────────────────
 # 3. Patient Endpoints Tests
 # ─────────────────────────────────────────────

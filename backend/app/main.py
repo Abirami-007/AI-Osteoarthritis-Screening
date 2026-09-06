@@ -137,6 +137,7 @@ async def root():
             "predict": "POST /predict",
             "auth_register": "POST /auth/register",
             "auth_login": "POST /auth/login",
+            "users": "GET /users",
             "patients": "GET, POST /patients",
             "screenings": "POST /screenings, GET /screenings/{patient_id}",
         },
@@ -559,6 +560,18 @@ async def login(
         message="Login successful",
         user=UserResponse.model_validate(user),
     )
+
+
+@app.get("/users", response_model=list[UserResponse], status_code=status.HTTP_200_OK)
+async def list_users(
+    db: Session = Depends(get_db),
+):
+    """
+    Retrieve registered users (temporary admin/debug endpoint).
+    Returns only id, username, email, and created_at.
+    Never exposes password_hash or credentials.
+    """
+    return db.query(User).order_by(User.id.asc()).all()
 
 
 # ─────────────────────────────────────────────
